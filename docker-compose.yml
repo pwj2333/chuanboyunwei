@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: ship-maintenance-backend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_SECRET=${JWT_SECRET:-ship-maintenance-secret-key-change-in-production}
+      - FRONTEND_URL=http://localhost
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/uploads:/app/uploads
+    restart: unless-stopped
+    networks:
+      - ship-network
+
+  frontend:
+    build: ./frontend
+    container_name: ship-maintenance-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - ship-network
+
+networks:
+  ship-network:
+    driver: bridge
+
+volumes:
+  db-data:
+  uploads:
