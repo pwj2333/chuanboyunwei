@@ -2,11 +2,28 @@
   <div class="event-center">
     <section class="workspace-grid">
       <article class="page-panel lane-board">
-        <div v-for="ship in shipBoards" :key="ship.id" class="ship-section">
+        <draggable
+          v-model="draggableShipBoards"
+          item-key="id"
+          class="ship-sort-list"
+          handle=".ship-drag-handle"
+          :animation="180"
+          ghost-class="ship-drag-ghost"
+          chosen-class="ship-drag-chosen"
+          drag-class="ship-drag-active"
+          @change="handleShipOrderChange"
+        >
+          <template #item="{ element: ship }">
+        <div class="ship-section">
           <div class="ship-head">
-            <div>
+            <div class="ship-title-group">
+              <button type="button" class="ship-drag-handle" title="拖拽排序" aria-label="拖拽排序">
+                <el-icon><Rank /></el-icon>
+              </button>
+              <div>
               <p class="ship-name">{{ ship.name }}</p>
                 <h4>{{ ship.lanes.length ? `共有 ${ship.lanes.length} 条待归档事件链` : '当前无待归档事件' }}</h4>
+              </div>
             </div>
             <div class="ship-stats">
               <span>活跃节点 {{ ship.activeNodes }}</span>
@@ -93,6 +110,8 @@
 
           <div v-else class="ship-empty">暂无数据</div>
         </div>
+          </template>
+        </draggable>
       </article>
 
       <aside class="page-panel inspector-panel">
@@ -334,6 +353,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { Rank } from '@element-plus/icons-vue';
+import draggable from 'vuedraggable';
 import { eventTypes, events, knowledge, records as recordsApi, ships } from '@/api';
 import { useAuthStore } from '@/stores/auth';
 import { formatDateTime, getPriorityMeta, getStatusMeta } from '@/utils/ops';
@@ -344,6 +365,8 @@ const authStore = useAuthStore();
 const shipList = ref([]);
 const eventTypeList = ref([]);
 const eventList = ref([]);
+const shipOrderIds = ref([]);
+const savingShipOrder = ref(false);
 const selectedEventId = ref(null);
 const selectedRecords = ref([]);
 const selectedKnowledge = ref(null);
@@ -428,7 +451,7 @@ const selectedChildren = computed(() => {
 });
 
 const shipBoards = computed(() => {
-  return shipList.value.map((ship) => {
+  const boards = shipList.value.map((ship) => {
     const shipEvents = eventList.value.filter((event) => event.ship_id === ship.id);
     const roots = shipEvents.filter((event) => !event.parent_event_id || !eventMap.value.has(event.parent_event_id));
 
@@ -444,17 +467,69 @@ const shipBoards = computed(() => {
     return {
       id: ship.id,
       name: ship.name,
+      created_at: ship.created_at,
+      display_order: ship.display_order,
       lanes,
+      visibleNodeCount: lanes.reduce((count, lane) => count + lane.nodes.length, 0),
       activeNodes: lanes.reduce((count, lane) => count + lane.activeCount, 0),
       highPriority: lanes.reduce((count, lane) => count + lane.nodes.filter((node) => node.priority === 'high' && activeStatuses.includes(node.status)).length, 0),
       recordCount: lanes.reduce((count, lane) => count + lane.nodes.reduce((sum, node) => sum + (node.record_count || 0), 0), 0)
     };
   });
+
+  const savedOrderIds = shipOrderIds.value;
+
+  if (!savedOrderIds.length) {
+    return [...boards].sort(compareDefaultShipBoards);
+  }
+
+  const orderMap = new Map(savedOrderIds.map((id, index) => [id, index]));
+
+  return [...boards].sort((left, right) => {
+    const leftHasOrder = orderMap.has(left.id);
+    const rightHasOrder = orderMap.has(right.id);
+
+    if (leftHasOrder && rightHasOrder) {
+      return orderMap.get(left.id) - orderMap.get(right.id);
+    }
+
+    if (leftHasOrder) return -1;
+    if (rightHasOrder) return 1;
+
+    return compareDefaultShipBoards(left, right);
+  });
+});
+
+const draggableShipBoards = computed({
+  get: () => shipBoards.value,
+  set: (boards) => {
+    shipOrderIds.value = boards.map((ship) => ship.id);
+  }
 });
 
 const visibleEventIds = computed(() => {
   return shipBoards.value.flatMap((ship) => ship.lanes.flatMap((lane) => lane.nodes.map((node) => node.id)));
 });
+
+function getTimeValue(value) {
+  const timestamp = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compareDefaultShipBoards(left, right) {
+  return (
+    right.visibleNodeCount - left.visibleNodeCount ||
+    getTimeValue(right.created_at) - getTimeValue(left.created_at) ||
+    right.id - left.id
+  );
+}
+
+function extractSavedShipOrderIds(shipsData) {
+  return shipsData
+    .filter((ship) => ship.display_order !== null && ship.display_order !== undefined)
+    .sort((left, right) => Number(left.display_order) - Number(right.display_order) || right.id - left.id)
+    .map((ship) => ship.id);
+}
 
 function collectSubtree(rootId, depth = 0) {
   const root = eventMap.value.get(rootId);
@@ -640,12 +715,31 @@ async function loadData() {
   ]);
 
   shipList.value = shipsData;
+  shipOrderIds.value = extractSavedShipOrderIds(shipsData);
   eventTypeList.value = eventTypesData;
   eventList.value = eventsData;
 
   const firstVisible = visibleEventIds.value[0] || null;
   if (!selectedEventId.value || !visibleEventIds.value.includes(selectedEventId.value)) {
     selectedEventId.value = firstVisible;
+  }
+}
+
+async function handleShipOrderChange() {
+  if (savingShipOrder.value) {
+    return;
+  }
+
+  savingShipOrder.value = true;
+
+  try {
+    const orderedShips = await ships.updateOrder(shipOrderIds.value);
+    shipList.value = orderedShips;
+    shipOrderIds.value = extractSavedShipOrderIds(orderedShips);
+  } catch (error) {
+    await loadData();
+  } finally {
+    savingShipOrder.value = false;
   }
 }
 
@@ -968,11 +1062,18 @@ onBeforeUnmount(() => {
   gap: 20px;
 }
 
+.ship-sort-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
 .ship-section {
   padding: 18px;
   border-radius: 22px;
   background: rgba(8, 18, 31, 0.82);
   border: 1px solid rgba(91, 151, 205, 0.08);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 
 .ship-head,
@@ -995,6 +1096,44 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.ship-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ship-drag-handle {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid rgba(71, 209, 255, 0.18);
+  background: rgba(13, 31, 47, 0.82);
+  color: #61e8ff;
+  cursor: grab;
+}
+
+.ship-drag-handle:active {
+  cursor: grabbing;
+}
+
+.ship-drag-chosen {
+  border-color: rgba(97, 232, 255, 0.44);
+  box-shadow: 0 14px 34px rgba(3, 10, 20, 0.36);
+}
+
+.ship-drag-ghost {
+  opacity: 0.42;
+}
+
+.ship-drag-active {
+  opacity: 0.92;
 }
 
 .ship-name {

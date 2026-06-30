@@ -57,7 +57,8 @@ export const users = {
 // 船舶管理
 export const ships = {
   list: () => api.get('/ships'),
-  create: (name) => api.post('/ships', { name })
+  create: (name) => api.post('/ships', { name }),
+  updateOrder: (shipIds) => api.patch('/ships/order', { shipIds })
 };
 
 export const eventTypes = {

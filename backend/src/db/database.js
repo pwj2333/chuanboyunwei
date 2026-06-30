@@ -145,6 +145,13 @@ async function initDatabase() {
       );
     `);
     try {
+      db.exec('ALTER TABLE ships ADD COLUMN display_order INTEGER');
+    } catch (migrationError) {
+      if (!String(migrationError.message || '').includes('duplicate column name: display_order')) {
+        throw migrationError;
+      }
+    }
+    try {
       db.exec('ALTER TABLE events ADD COLUMN event_type_id INTEGER');
     } catch (migrationError) {
       if (!String(migrationError.message || '').includes('duplicate column name: event_type_id')) {
